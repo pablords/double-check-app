@@ -1,0 +1,11 @@
+build
+coverage
+node_modules
+storybook
+
+/www
+
+/platforms
+/plugins
+
+/storybook-static

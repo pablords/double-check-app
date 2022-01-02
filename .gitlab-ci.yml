@@ -1,0 +1,128 @@
+stages:
+  - build
+  - storybook
+  - deploy-test
+  - notification
+build:
+  stage: build
+  tags:
+    - docker
+  variables:
+    DOCKER_HOST: tcp://docker:2375/
+    DOCKER_DRIVER: overlay2
+    DOCKER_TLS_CERTDIR: ""
+  services:
+    - name: docker:dind
+      entrypoint: ["env", "-u", "DOCKER_HOST"]
+      command:
+        [
+          "dockerd-entrypoint.sh",
+          "--insecure-registry=unity.servehttp.com:5000",
+        ]
+  before_script:
+    - apk add --update git curl
+  script:
+    - wget -c https://github.com/zmwangx/ets/releases/download/v0.2.1/ets_0.2.1_linux_amd64.tar.gz -O - | tar -xz -C /usr/local/bin
+    - docker build --no-cache -t $DOCKER_REGISTRY_ADDRESS/$CI_PROJECT_NAME:$CI_COMMIT_REF_NAME-test --build-arg ENVIRONMENT=TEST .
+    - docker push $DOCKER_REGISTRY_ADDRESS/$CI_PROJECT_NAME:$CI_COMMIT_REF_NAME-test
+  only:
+    refs:
+      - branches
+    variables:
+      - $CI_COMMIT_MESSAGE =~ /make-test-build/
+
+storybook:
+  stage: storybook
+  tags:
+    - docker
+  image: alpine
+  cache:
+    paths:
+    - node_modules/
+  before_script:
+    - apk add openssh-client
+    - eval $(ssh-agent -s)
+    - echo "$SSH_PRIVATE_KEY" | tr -d '\r' | ssh-add -
+    - mkdir -p ~/.ssh
+    - chmod 700 ~/.ssh
+    - apk add --update nodejs npm
+    - apk add --update npm
+    - apk add zip
+  script:
+    - npm install
+    - npm run build-storybook
+    - mv storybook-static storybook
+    - zip -r storybook.zip storybook
+    - ssh -o StrictHostKeyChecking=no -p 65002 u252983890@46.17.175.1 "cd /home/u252983890/domains/doublecheck-app.tech/public_html; rm -rf storybook.zip;"
+    - scp -o StrictHostKeyChecking=no -P 65002 storybook.zip u252983890@46.17.175.1:/home/u252983890/domains/doublecheck-app.tech/public_html
+    - ssh -p 65002 u252983890@46.17.175.1 "cd /home/u252983890/domains/doublecheck-app.tech/public_html; unzip -o storybook.zip;"
+  only:
+    refs:
+      - branches
+    variables:
+      - $CI_COMMIT_MESSAGE =~ /publish-storybook/
+
+
+
+deploy-test:
+  stage: deploy-test
+  tags:
+    - docker
+  image: alpine
+  before_script:
+    - apk add openssh-client
+    - eval $(ssh-agent -s)
+    - echo "$SSH_PRIVATE_KEY" | tr -d '\r' | ssh-add -
+    - mkdir -p ~/.ssh
+    - chmod 700 ~/.ssh
+    - apk add --update nodejs npm
+    - apk add --update npm
+    - apk add zip
+  script:
+    - npm install
+    - npm run build
+    - mv www testapp
+    - zip -r testapp.zip testapp
+    - ssh -o StrictHostKeyChecking=no -p 65002 u252983890@46.17.175.1 "cd /home/u252983890/domains/doublecheck-app.tech/public_html; rm -rf testapp.zip;"
+    - scp -o StrictHostKeyChecking=no -P 65002 testapp.zip u252983890@46.17.175.1:/home/u252983890/domains/doublecheck-app.tech/public_html
+    - ssh -p 65002 u252983890@46.17.175.1 "cd /home/u252983890/domains/doublecheck-app.tech/public_html; unzip -o testapp.zip;"
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "dev"'
+      when: on_success
+
+
+success_notification:
+  image: alpine:latest
+  tags:
+    - docker
+  stage: notification
+  script:
+    - apk add --update git curl
+    - wget https://raw.githubusercontent.com/DiscordHooks/gitlab-ci-discord-webhook/master/send.sh
+    - chmod +x send.sh
+    - /bin/ash ./send.sh success $WEBHOOK_URL_APP
+  only:
+    refs:
+      - branches
+    variables:
+      - $CI_COMMIT_MESSAGE =~ /make-test-build/
+      - $CI_COMMIT_MESSAGE =~ /publish-storybook/
+  when: on_success
+
+failure_notification:
+  image: alpine:latest
+  tags:
+    - docker
+  stage: notification
+  script:
+    - apk add --update git curl
+    - wget https://raw.githubusercontent.com/DiscordHooks/gitlab-ci-discord-webhook/master/send.sh
+    - chmod +x send.sh
+    - /bin/ash ./send.sh failure $WEBHOOK_URL_APP
+  only:
+    refs:
+      - branches
+    variables:
+      - $CI_COMMIT_MESSAGE =~ /make-test-build/
+      - $CI_COMMIT_MESSAGE =~ /publish-storybook/
+  when: on_failure
